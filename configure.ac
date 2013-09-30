@@ -1,6 +1,7 @@
 AC_INIT(curlftpfs, 0.9.2)
 AM_INIT_AUTOMAKE
-AM_CONFIG_HEADER(config.h)
+AC_CONFIG_HEADER([config.h])
+AC_CONFIG_MACRO_DIR([m4])
 
 AC_PROG_AWK
 AC_PROG_CC
@@ -10,7 +11,6 @@ AC_PROG_INSTALL
 AC_PROG_LN_S
 AC_PROG_MAKE_SET
 AC_PROG_LIBTOOL
-AC_PROG_RANLIB
 export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
 
 PKG_CHECK_MODULES(GLIB, [glib-2.0])
@@ -24,8 +24,11 @@ if test "$libcurl_protocol_HTTP" != yes; then
 	AC_MSG_ERROR(["We need libcurl with support for HTTP protocol."])
 fi
 
-CFLAGS="$CFLAGS -Wall -W -D_REENTRANT $GLIB_CFLAGS $FUSE_CFLAGS $LIBCURL_CPPFLAGS"
-LIBS="$GLIB_LIBS $FUSE_LIBS $LIBCURL"
+AX_PTHREAD([], [AC_MSG_ERROR(["pthread not found"])])
+
+CFLAGS="$CFLAGS -Wall -W -D_REENTRANT $GLIB_CFLAGS $FUSE_CFLAGS $LIBCURL_CPPFLAGS $PTHREAD_CFLAGS"
+LIBS="$LIBS $GLIB_LIBS $FUSE_LIBS $LIBCURL $PTHREAD_LIBS"
+CC="$PTHREAD_CC"
 
 have_fuse_opt_parse=no
 AC_CHECK_FUNC([fuse_opt_parse], [have_fuse_opt_parse=yes])
@@ -48,7 +51,7 @@ AC_HEADER_TIME
 AC_STRUCT_TM
 #AC_TYPE_UINT32_T
 #AC_TYPE_UINT64_T
-AC_TYPE_UINT8_T
+#AC_TYPE_UINT8_T
 
 # Checks for library functions.
 AC_FUNC_MALLOC

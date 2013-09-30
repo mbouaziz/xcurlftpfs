@@ -35,6 +35,8 @@ libcurl >= 7.17.0
 Compilation and Installation
 ============================
 
+autoreconf -i
+
 ./configure
 make
 make install
