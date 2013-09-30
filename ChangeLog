@@ -1,3 +1,7 @@
+Sep 30, 2013
+Added an option to have symlinks created using httpostfs protocol
+mehdibouaziz
+
 Apr 29, 2008
 Reduce DEFAULT_CACHE_TIMEOUT from 300 to 10 seconds. List cache options and default timeout in --help.
 mail2nob
