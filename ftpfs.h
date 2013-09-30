@@ -2,8 +2,9 @@
 #define __CURLFTPFS_FTPFS_H__
 
 /*
-    FTP file system
+    Extended FTP file system
     Copyright (C) 2006 Robson Braga Araujo <robsonbraga@gmail.com>
+    Copyright (C) 2013 Mehdi Bouaziz <mehdi@bouaziz.org>
 
     This program can be distributed under the terms of the GNU GPL.
     See the file COPYING.
@@ -16,9 +17,12 @@
 
 struct ftpfs {
   char* host;
+  char* host2;
   char* mountpoint;
   pthread_mutex_t lock;
+  pthread_mutex_t lock2;
   CURL* connection;
+  CURL* connection2;
   CURLM* multi;
   int attached_to_multi;
   struct ftpfs_file* current_fh;
@@ -56,6 +60,7 @@ struct ftpfs {
   int proxyntlm;
   int proxytype;
   char* user;
+  char* user2;
   char* proxy_user;
   int ssl_version;
   int ip_version;

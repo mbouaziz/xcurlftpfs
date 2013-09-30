@@ -1,6 +1,7 @@
 /*
-    FTP file system
+    Extended FTP file system
     Copyright (C) 2006 Robson Braga Araujo <robsonbraga@gmail.com>
+    Copyright (C) 2013 Mehdi Bouaziz <mehdi@bouaziz.org>
 
     This program can be distributed under the terms of the GNU GPL.
     See the file COPYING.
@@ -165,6 +166,7 @@ static struct fuse_opt ftpfs_opts[] = {
   FTPFS_OPT("socks4",             proxytype, CURLPROXY_SOCKS4),
   FTPFS_OPT("socks5",             proxytype, CURLPROXY_SOCKS5),
   FTPFS_OPT("user=%s",            user, 0),
+  FTPFS_OPT("httpuser=%s",        user2, 0),
   FTPFS_OPT("proxy_user=%s",      proxy_user, 0),
   FTPFS_OPT("tlsv1",              ssl_version, CURL_SSLVERSION_TLSv1),
   FTPFS_OPT("sslv3",              ssl_version, CURL_SSLVERSION_SSLv3),
@@ -268,6 +270,22 @@ static int op_return(int err, char * operation)
 }
 
 
+static int httpost(gchar *postdata, const void *writedata) {
+  pthread_mutex_lock(&ftpfs.lock2);
+  curl_easy_setopt_or_die(ftpfs.connection2, CURLOPT_POSTFIELDS, postdata);
+  curl_easy_setopt_or_die(ftpfs.connection2, CURLOPT_POSTFIELDSIZE, strlen(postdata));
+  curl_easy_setopt_or_die(ftpfs.connection2, CURLOPT_WRITEDATA, writedata);
+  CURLcode curl_res = curl_easy_perform(ftpfs.connection2);
+  pthread_mutex_unlock(&ftpfs.lock2);
+
+  if (curl_res != 0) {
+    DEBUG(1, "%s\n", error_buf);
+  }
+
+  g_free(postdata);
+  return curl_res;
+}
+
 static size_t write_data(void *ptr, size_t size, size_t nmemb, void *data) {
   struct ftpfs_file* fh = (struct ftpfs_file*)data;
   if (fh == NULL) return 0;
@@ -295,6 +313,7 @@ static size_t read_data(void *ptr, size_t size, size_t nmemb, void *data) {
 
 #define curl_easy_setopt_or_die(handle, option, ...) \
   do {\
+    if (!handle) break;\
     CURLcode res = curl_easy_setopt(handle, option, __VA_ARGS__);\
     if (res != CURLE_OK) {\
       fprintf(stderr, "Error setting curl: %s\n", error_buf);\
@@ -1354,6 +1373,14 @@ static int ftpfs_rename(const char* from, const char* to) {
   return op_return(err, "ftpfs_rename");
 }
 
+static int httpostfs_symlink(const char* target, const char* link) {
+  DEBUG(1, "httpostfs_symlink from %s to %s\n", link, target);
+
+  CURLcode curl_res = httpost(g_strdup_printf("symlink\n%s\n%s\n", link, target), NULL);
+  int err = curl_res ? -EPERM : 0;
+  return op_return(err, "httpostfs_symlink");
+}
+
 static int ftpfs_readlink(const char *path, char *linkbuf, size_t size) {
   int err;
   CURLcode curl_res;
@@ -1424,7 +1451,7 @@ static struct fuse_cache_operations ftpfs_oper = {
     .readlink   = ftpfs_readlink,
     .mknod      = ftpfs_mknod,
     .mkdir      = ftpfs_mkdir,
-//    .symlink    = ftpfs_symlink,
+//    .symlink    = httpostfs_symlink, // set only if a httpostfs host provided
     .unlink     = ftpfs_unlink,
     .rmdir      = ftpfs_rmdir,
     .rename     = ftpfs_rename,
@@ -1450,6 +1477,9 @@ static struct fuse_cache_operations ftpfs_oper = {
 
 static int curlftpfs_fuse_main(struct fuse_args *args)
 {
+  if (ftpfs.connection2) {
+    ftpfs_oper.oper.symlink = httpostfs_symlink;
+  }
 #if FUSE_VERSION >= 26
     return fuse_main(args->argc, args->argv, cache_init(&ftpfs_oper), NULL);
 #else
@@ -1474,8 +1504,20 @@ static int ftpfs_opt_proc(void* data, const char* arg, int key,
         ftpfs.host = g_strdup_printf("%s%s%s", prefix, arg, 
 			arg[strlen(arg)-1] == '/' ? "" : "/");
         return 0;
-      } else if (!ftpfs.mountpoint)
+      } else if (!ftpfs.mountpoint) {
         ftpfs.mountpoint = strdup(arg);
+        return 0;
+      } else if (!ftpfs.host2) {
+        ftpfs.host2 = ftpfs.mountpoint;
+        const char* prefix = "";
+        if (strncmp(ftpfs.host2, "http://", 7) && strncmp(ftpfs.host2, "https://", 8)) {
+          prefix = "http://";
+        }
+        ftpfs.host2 = g_strdup_printf("%s%s%s", prefix, ftpfs.host2,
+                                      ftpfs.host2[strlen(ftpfs.host2)-1] == '/' ? "" : "/");
+        free(ftpfs.mountpoint);
+        ftpfs.mountpoint = strdup(arg);
+      }
       return 1;
     case KEY_HELP:
       usage(outargs->argv[0]);
@@ -1499,7 +1541,7 @@ static int ftpfs_opt_proc(void* data, const char* arg, int key,
 
 static void usage(const char* progname) {
   fprintf(stderr,
-"usage: %s <ftphost> <mountpoint>\n"
+"usage: %s <ftphost> [<httpostfshost>] <mountpoint>\n"
 "\n"
 "CurlFtpFS options:\n"
 "    -o opt,[opt...]        ftp options\n"
@@ -1574,13 +1616,18 @@ static int ftpfilemethod(const char *str)
   return CURLFTPMETHOD_MULTICWD;
 }
 
-static void set_common_curl_stuff(CURL* easy) {
+static void set_common_curl_stuff(CURL* easy, CURL* easy2) {
   curl_easy_setopt_or_die(easy, CURLOPT_WRITEFUNCTION, read_data);
+  curl_easy_setopt_or_die(easy2, CURLOPT_WRITEFUNCTION, read_data);
   curl_easy_setopt_or_die(easy, CURLOPT_READFUNCTION, write_data);
   curl_easy_setopt_or_die(easy, CURLOPT_ERRORBUFFER, error_buf);
+  curl_easy_setopt_or_die(easy2, CURLOPT_ERRORBUFFER, error_buf);
   curl_easy_setopt_or_die(easy, CURLOPT_URL, ftpfs.host);
+  curl_easy_setopt_or_die(easy2, CURLOPT_URL, ftpfs.host2);
   curl_easy_setopt_or_die(easy, CURLOPT_NETRC, CURL_NETRC_OPTIONAL);
+  curl_easy_setopt_or_die(easy2, CURLOPT_NETRC, CURL_NETRC_OPTIONAL);
   curl_easy_setopt_or_die(easy, CURLOPT_NOSIGNAL, 1);
+  curl_easy_setopt_or_die(easy2, CURLOPT_NOSIGNAL, 1);
   curl_easy_setopt_or_die(easy, CURLOPT_CUSTOMREQUEST, "LIST -a");
 
   if (ftpfs.custom_list) {
@@ -1602,6 +1649,7 @@ static void set_common_curl_stuff(CURL* easy) {
 
   if (ftpfs.verbose) {
     curl_easy_setopt_or_die(easy, CURLOPT_VERBOSE, TRUE);
+    curl_easy_setopt_or_die(easy2, CURLOPT_VERBOSE, TRUE);
   }
 
   if (ftpfs.disable_epsv) {
@@ -1628,9 +1676,11 @@ static void set_common_curl_stuff(CURL* easy) {
   if (ftpfs.tcp_nodelay) {
     /* CURLOPT_TCP_NODELAY is not defined in older versions */
     curl_easy_setopt_or_die(easy, CURLOPT_TCP_NODELAY, 1);
+    curl_easy_setopt_or_die(easy2, CURLOPT_TCP_NODELAY, 1);
   }
 
   curl_easy_setopt_or_die(easy, CURLOPT_CONNECTTIMEOUT, ftpfs.connect_timeout);
+  curl_easy_setopt_or_die(easy2, CURLOPT_CONNECTTIMEOUT, ftpfs.connect_timeout);
 
   /* CURLFTPSSL_CONTROL and CURLFTPSSL_ALL should make the connection fail if
    * the server doesn't support SSL but libcurl only honors this beginning
@@ -1653,47 +1703,64 @@ static void set_common_curl_stuff(CURL* easy) {
     fprintf(stderr, "\n");
   }
   curl_easy_setopt_or_die(easy, CURLOPT_FTP_SSL, ftpfs.use_ssl);
+  curl_easy_setopt_or_die(easy2, CURLOPT_FTP_SSL, ftpfs.use_ssl);
 
   curl_easy_setopt_or_die(easy, CURLOPT_SSLCERT, ftpfs.cert);
+  curl_easy_setopt_or_die(easy2, CURLOPT_SSLCERT, ftpfs.cert);
   curl_easy_setopt_or_die(easy, CURLOPT_SSLCERTTYPE, ftpfs.cert_type);
+  curl_easy_setopt_or_die(easy2, CURLOPT_SSLCERTTYPE, ftpfs.cert_type);
   curl_easy_setopt_or_die(easy, CURLOPT_SSLKEY, ftpfs.key);
+  curl_easy_setopt_or_die(easy2, CURLOPT_SSLKEY, ftpfs.key);
   curl_easy_setopt_or_die(easy, CURLOPT_SSLKEYTYPE, ftpfs.key_type);
+  curl_easy_setopt_or_die(easy2, CURLOPT_SSLKEYTYPE, ftpfs.key_type);
   curl_easy_setopt_or_die(easy, CURLOPT_SSLKEYPASSWD, ftpfs.key_password);
+  curl_easy_setopt_or_die(easy2, CURLOPT_SSLKEYPASSWD, ftpfs.key_password)
 
   if (ftpfs.engine) {
     curl_easy_setopt_or_die(easy, CURLOPT_SSLENGINE, ftpfs.engine);
+    curl_easy_setopt_or_die(easy2, CURLOPT_SSLENGINE, ftpfs.engine);
     curl_easy_setopt_or_die(easy, CURLOPT_SSLENGINE_DEFAULT, 1);
+    curl_easy_setopt_or_die(easy2, CURLOPT_SSLENGINE_DEFAULT, 1);
   }
 
   curl_easy_setopt_or_die(easy, CURLOPT_SSL_VERIFYPEER, TRUE);
+  curl_easy_setopt_or_die(easy2, CURLOPT_SSL_VERIFYPEER, TRUE);
   if (ftpfs.no_verify_peer) {
     curl_easy_setopt_or_die(easy, CURLOPT_SSL_VERIFYPEER, FALSE);
+    curl_easy_setopt_or_die(easy2, CURLOPT_SSL_VERIFYPEER, FALSE);
   }
 
   if (ftpfs.cacert || ftpfs.capath) {
     if (ftpfs.cacert) {
       curl_easy_setopt_or_die(easy, CURLOPT_CAINFO, ftpfs.cacert);
+      curl_easy_setopt_or_die(easy2, CURLOPT_CAINFO, ftpfs.cacert);
     }
     if (ftpfs.capath) {
       curl_easy_setopt_or_die(easy, CURLOPT_CAPATH, ftpfs.capath);
+      curl_easy_setopt_or_die(easy2, CURLOPT_CAPATH, ftpfs.capath);
     }
   }
 
   if (ftpfs.ciphers) {
     curl_easy_setopt_or_die(easy, CURLOPT_SSL_CIPHER_LIST, ftpfs.ciphers);
+    curl_easy_setopt_or_die(easy2, CURLOPT_SSL_CIPHER_LIST, ftpfs.ciphers);
   }
 
   if (ftpfs.no_verify_hostname) {
     /* The default is 2 which verifies even the host string. This sets to 1
      * which means verify the host but not the string. */
     curl_easy_setopt_or_die(easy, CURLOPT_SSL_VERIFYHOST, 1);
+    curl_easy_setopt_or_die(easy2, CURLOPT_SSL_VERIFYHOST, 1);
   }
 
   curl_easy_setopt_or_die(easy, CURLOPT_INTERFACE, ftpfs.interface);
+  curl_easy_setopt_or_die(easy2, CURLOPT_INTERFACE, ftpfs.interface);
   curl_easy_setopt_or_die(easy, CURLOPT_KRB4LEVEL, ftpfs.krb4);
+  curl_easy_setopt_or_die(easy2, CURLOPT_KRB4LEVEL, ftpfs.krb4);
   
   if (ftpfs.proxy) {
     curl_easy_setopt_or_die(easy, CURLOPT_PROXY, ftpfs.proxy);
+    curl_easy_setopt_or_die(easy2, CURLOPT_PROXY, ftpfs.proxy);
   }
 
   /* The default proxy type is HTTP */
@@ -1701,26 +1768,36 @@ static void set_common_curl_stuff(CURL* easy) {
     ftpfs.proxytype = CURLPROXY_HTTP;
   }
   curl_easy_setopt_or_die(easy, CURLOPT_PROXYTYPE, ftpfs.proxytype);
+  curl_easy_setopt_or_die(easy2, CURLOPT_PROXYTYPE, ftpfs.proxytype);
   
   /* Connection to FTP servers only make sense with a HTTP tunnel proxy */
   if (ftpfs.proxytype == CURLPROXY_HTTP || ftpfs.proxytunnel) {
     curl_easy_setopt_or_die(easy, CURLOPT_HTTPPROXYTUNNEL, TRUE);
+    curl_easy_setopt_or_die(easy2, CURLOPT_HTTPPROXYTUNNEL, TRUE);
   }
 
   if (ftpfs.proxyanyauth) {
     curl_easy_setopt_or_die(easy, CURLOPT_PROXYAUTH, CURLAUTH_ANY);
+    curl_easy_setopt_or_die(easy2, CURLOPT_PROXYAUTH, CURLAUTH_ANY);
   } else if (ftpfs.proxyntlm) {
     curl_easy_setopt_or_die(easy, CURLOPT_PROXYAUTH, CURLAUTH_NTLM);
+    curl_easy_setopt_or_die(easy2, CURLOPT_PROXYAUTH, CURLAUTH_NTLM);
   } else if (ftpfs.proxydigest) {
     curl_easy_setopt_or_die(easy, CURLOPT_PROXYAUTH, CURLAUTH_DIGEST);
+    curl_easy_setopt_or_die(easy2, CURLOPT_PROXYAUTH, CURLAUTH_DIGEST);
   } else if (ftpfs.proxybasic) {
     curl_easy_setopt_or_die(easy, CURLOPT_PROXYAUTH, CURLAUTH_BASIC);
+    curl_easy_setopt_or_die(easy2, CURLOPT_PROXYAUTH, CURLAUTH_BASIC);
   }
 
   curl_easy_setopt_or_die(easy, CURLOPT_USERPWD, ftpfs.user);
+  curl_easy_setopt_or_die(easy2, CURLOPT_USERPWD, ftpfs.user2);
   curl_easy_setopt_or_die(easy, CURLOPT_PROXYUSERPWD, ftpfs.proxy_user);
+  curl_easy_setopt_or_die(easy2, CURLOPT_PROXYUSERPWD, ftpfs.proxy_user);
   curl_easy_setopt_or_die(easy, CURLOPT_SSLVERSION, ftpfs.ssl_version);
+  curl_easy_setopt_or_die(easy2, CURLOPT_SSLVERSION, ftpfs.ssl_version);
   curl_easy_setopt_or_die(easy, CURLOPT_IPRESOLVE, ftpfs.ip_version);
+  curl_easy_setopt_or_die(easy2, CURLOPT_IPRESOLVE, ftpfs.ip_version);
 }
 
 static void checkpasswd(const char *kind, /* for what purpose */
@@ -1784,7 +1861,7 @@ int main(int argc, char** argv) {
   int res;
   struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
   CURLcode curl_res;
-  CURL* easy;
+  CURL* easy, easy2;
   char *tmp;
 
   // Initialize curl library before we are a multithreaded program
@@ -1818,7 +1895,9 @@ int main(int argc, char** argv) {
   }
 
   easy = curl_easy_init();
-  if (easy == NULL) {
+  if (ftpfs.host2)
+    easy2 = curl_easy_init();
+  if (easy == NULL || (ftpfs.host2 != NULL && easy2 == NULL)) {
     fprintf(stderr, "Error initializing libcurl\n");
     exit(1);
   }
@@ -1828,6 +1907,8 @@ int main(int argc, char** argv) {
     exit(1);
 
   checkpasswd("host", &ftpfs.user);
+  if (easy2)
+    checkpasswd("httpostfshost", &ftpfs.user2);
   checkpasswd("proxy", &ftpfs.proxy_user);
 
   if (ftpfs.transform_symlinks && !ftpfs.mountpoint) {
@@ -1853,6 +1934,25 @@ int main(int argc, char** argv) {
   }
   curl_easy_setopt_or_die(easy, CURLOPT_NOBODY, 0);
 
+  if (easy2) {
+     struct buffer buf;
+     buf_init(&buf);
+     curl_easy_setopt_or_die(easy2, CURLOPT_POSTFIELDSIZE, 0);
+     curl_easy_setopt_or_die(easy2, CURLOPT_WRITEDATA, &buf);
+     curl_res = curl_easy_perform(easy2);
+     if (curl_res != 0) {
+       fprintf(stderr, "Error connecting to http: %s\n", error_buf);
+       exit(1);
+     }
+
+     blksize_t blksize = -1;
+     if (sscanf(buf.p, "%ld", &blksize) != 1 || blksize <= 0) {
+       fprintf(stderr, "Wrong blocksize (%ld), maybe the host is not a right httpostfs server\n", blksize);
+       exit(1);
+     }
+     ftpfs.blksize = blksize;
+  }
+
   ftpfs.multi = curl_multi_init();
   if (ftpfs.multi == NULL) {
     fprintf(stderr, "Error initializing libcurl multi\n");
@@ -1860,7 +1960,10 @@ int main(int argc, char** argv) {
   }
 
   ftpfs.connection = easy;
+  ftpfs.connection2 = easy2;
   pthread_mutex_init(&ftpfs.lock, NULL);
+  if (easy2)
+    pthread_mutex_init(&ftpfs.lock2, NULL);
 
   // Set the filesystem name to show the current server
   tmp = g_strdup_printf("-ofsname=curlftpfs#%s", ftpfs.host);
