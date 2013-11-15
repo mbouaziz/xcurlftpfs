@@ -55,7 +55,7 @@ static int parse_dir_unix(const char *line,
                "%llu" SPACES
                "%3s"  SPACES
                "%2s"  SPACES
-               "%5s"  "%*c"
+               "%5s"  SPACES /*"%*c"*/
                "%1023c",
                mode, &nlink, user, group, &size, month, day, year, file);
   if (res < 9) {
@@ -66,7 +66,7 @@ static int parse_dir_unix(const char *line,
                  "%llu" SPACES
                  "%3s"  SPACES
                  "%2s"  SPACES
-                 "%5s"  "%*c"
+                 "%5s"  SPACES /*"%*c"*/
                  "%1023c",
                  mode, user, group, &size, month, day, year, file);
     if (res < 8) {
