@@ -842,9 +842,14 @@ static int ftpfs_open_common(const char* path_tmp, mode_t mode,
 			err = -EACCES;
 	  }
 	  
+          if (!err && (fi->flags & O_CREAT))
+            {
+              err = ftpfs_mknod(path, (mode & 07777) | S_IFREG, 0);
+            }
+
 	  if (!err)
 	  {
-		  if ((fi->flags & O_CREAT) || (fi->flags & O_TRUNC))
+            if ((fi->flags & O_CREAT) || (fi->flags & O_TRUNC))
 	      {
 	        DEBUG(1, "opening %s for writing with O_CREAT or O_TRUNC. write thread will start now\n", path);
 	    	  
@@ -1585,7 +1590,8 @@ static void usage(const char* progname) {
 "    httpproxy           use a HTTP proxy (default)\n"
 "    socks4              use a SOCKS4 proxy\n"
 "    socks5              use a SOCKS5 proxy\n"
-"    user=STR            set server user and password\n"
+"    user=STR            set server user and password for ftp\n"
+"    httpuser=STR        set server user and password for httpostfs host\n"
 "    proxy_user=STR      set proxy user and password\n"
 "    tlsv1               use TLSv1 (SSL)\n"
 "    sslv3               use SSLv3 (SSL)\n"
