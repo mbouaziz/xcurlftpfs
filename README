@@ -1,10 +1,19 @@
 Note
 ========
 
-This is _not_ the official project, which can be found there:
+XCurlFtpFS is a filesystem for accessing ftp hosts based on FUSE and
+libcurl, as well as performing some actions (like symlinks) using
+httpostfs protocol.
+
+This is _not_ the official CurlFtpFS project, which can be found there:
 http://curlftpfs.sourceforge.net/
-I just added some code the correctly handle filename which contains
-url-special chars (actually, just # and %) by url-encoding them :
+
+I forked from clobrother, added commits from jomat (urlencode) and
+taem (gitignore).
+
+Clobrother just added some code the correctly handle filename which
+contains url-special chars (actually, just # and %) by url-encoding
+them:
  % -> %25
  # -> %23
 Using that, curl will not translate them, and will target the correct
@@ -13,7 +22,7 @@ filename.
 CurlFtpFS
 =========
 
-CurlFtpFS is a filesystem for acessing ftp hosts based on FUSE and
+CurlFtpFS is a filesystem for accessing ftp hosts based on FUSE and
 libcurl. It automatically reconnects if the server times out. 
 
 My motivation to start this project was to learn how to program using
